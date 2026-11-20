@@ -40,7 +40,7 @@ Play around with it. Additional [deploy examples are here](https://github.com/sh
 Most people just want the [latest binary release](https://github.com/shazow/ssh-chat/releases/). If you're sure you want to compile it from source, read on:
 
 You can compile ssh-chat by using `make build`. The resulting binary is portable and
-can be run on any system with a similar OS and CPU arch. Go 1.8 or higher is required to compile.
+can be run on any system with a similar OS and CPU arch. Go 1.26 or higher is required to compile.
 
 If you're developing on this repo, there is a handy Makefile that should set
 things up with `make run`.
@@ -67,6 +67,7 @@ Application Options:
                    Refuse connections that do not present a public key. Any key is accepted.
       --motd=      Optional Message of the Day file.
       --log=       Write chat log to this file.
+      --history-size= Number of room broadcasts to retain in memory (default: 20, maximum: 1000).
       --pprof=     Enable pprof http server for profiling.
 
 Help Options:
@@ -82,6 +83,21 @@ $ ssh-chat --verbose --bind ":22" --identity ~/.ssh/id_dsa
 
 To bind on port 22, you'll need to make sure it's free (move any other ssh
 daemons to another port) and run ssh-chat as root (or with sudo).
+
+## Room commands
+
+| Command | What it does |
+| --- | --- |
+| `/history [COUNT]` | Show the latest public messages and emotes, oldest first. Defaults to 10; accepts 1–100. |
+| `/search TEXT` | Find the 10 latest public messages and emotes whose text contains `TEXT`, ignoring case. |
+| `/topic [TEXT\|-]` | Read the room topic. Operators can set it or clear it with `-`. New interactive sessions see the current topic on join. |
+| `/bell [on\|off]` | Change terminal alerts for mentions and private messages for this session. Without an argument, toggle the setting. |
+
+The in-memory history is shared by the room. It retains up to `--history-size`
+room broadcasts (including server announcements) and is cleared when the server
+restarts. `/history` and `/search` exclude announcements and private messages.
+New sessions receive at most 20 retained broadcasts on join, as before. Use
+`--history-size=0` to disable in-memory history without changing `--log`.
 
 ## Frequently Asked Questions
 

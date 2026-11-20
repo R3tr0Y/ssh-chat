@@ -58,7 +58,12 @@ type Host struct {
 
 // NewHost creates a Host on top of an existing listener.
 func NewHost(listener *sshd.SSHListener, auth *Auth) *Host {
-	room := chat.NewRoom()
+	return NewHostWithHistory(listener, auth, chat.DefaultHistorySize)
+}
+
+// NewHostWithHistory creates a Host with a configurable room history capacity.
+func NewHostWithHistory(listener *sshd.SSHListener, auth *Auth, historySize int) *Host {
+	room := chat.NewRoomWithHistory(historySize)
 	h := Host{
 		Room:     room,
 		listener: listener,
@@ -177,6 +182,9 @@ func (h *Host) Connect(term *sshd.Terminal) {
 		term.SetPrompt(GetPrompt(user))
 		term.AutoCompleteCallback = h.AutoCompleteFunction(user)
 		user.SetHighlight(user.Name())
+		if topic := h.Topic(); topic != "" {
+			user.Send(message.NewSystemMsg("Room topic: "+topic, user))
+		}
 	}
 
 	// Should the user be op'd on join?

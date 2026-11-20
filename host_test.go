@@ -196,27 +196,25 @@ func TestHostAllowlist(t *testing.T) {
 func TestHostAllowlistCommand(t *testing.T) {
 	s, host := getHost(t, NewAuth())
 	defer s.Close()
-	go host.Serve()
 
 	users := make(chan *message.User)
 	host.OnUserJoined = func(u *message.User) {
 		users <- u
 	}
+	go host.Serve()
 
-	kickSignal := make(chan struct{})
+	kicked := make(chan error, 1)
 	clientKey, err := sshd.NewRandomSigner(1024)
 	if err != nil {
 		t.Fatal(err)
 	}
 	clientKeyFP := sshd.Fingerprint(clientKey.PublicKey())
-	go sshd.ConnectShellWithKey(s.Addr().String(), "bar", clientKey, func(r io.Reader, w io.WriteCloser) error {
-		<-kickSignal
-		n, err := w.Write([]byte("alive and well"))
-		if n != 0 || err == nil {
-			t.Error("could write after being kicked")
-		}
-		return nil
-	})
+	go func() {
+		kicked <- sshd.ConnectShellWithKey(s.Addr().String(), "bar", clientKey, func(r io.Reader, _ io.WriteCloser) error {
+			_, err := io.Copy(io.Discard, r)
+			return err
+		})
+	}()
 
 	sshd.ConnectShell(s.Addr().String(), "foo", func(r io.Reader, w io.WriteCloser) error {
 		<-users
@@ -319,7 +317,9 @@ func TestHostAllowlistCommand(t *testing.T) {
 		sendCmd("/allowlist reverify")
 		assertLineEq(" * Kicked during pubkey reverification: bar\r", " * bar left. (After 0 seconds)\r")
 		assertLineEq(" * Kicked during pubkey reverification: bar\r", " * bar left. (After 0 seconds)\r")
-		kickSignal <- struct{}{}
+		if err := <-kicked; err != nil {
+			t.Errorf("failed to observe the kicked session closing: %v", err)
+		}
 
 		sendCmd("/allowlist add %s", testKey)
 		sendCmd("/allowlist status")
@@ -368,9 +368,14 @@ func TestHostKick(t *testing.T) {
 			w.Write([]byte("/kick bar\r\n"))
 			scanner.Scan() // Prompt
 
-			scanner.Scan() // Kick result
-			if actual, expected := stripPrompt(scanner.Text()), " * bar was kicked by quux.\r"; actual != expected {
-				t.Errorf("Failed to detect kick:\n Got: %q;\nWant: %q", actual, expected)
+			var kick, leave bool
+			for i := 0; i < 2 && scanner.Scan(); i++ {
+				line := stripPrompt(scanner.Text())
+				kick = kick || line == " * bar was kicked by quux.\r"
+				leave = leave || strings.HasPrefix(line, " * bar left. (After ")
+			}
+			if !kick || !leave {
+				t.Errorf("expected both kick and leave notices; got kick=%t leave=%t", kick, leave)
 			}
 
 			kicked <- struct{}{}
@@ -387,17 +392,9 @@ func TestHostKick(t *testing.T) {
 
 			<-kicked
 
-			if _, err := w.Write([]byte("am I still here?\r\n")); err != io.EOF {
-				return errors.New("expected to be kicked")
+			for scanner.Scan() {
 			}
-
-			scanner.Scan()
-			if err := scanner.Err(); err == io.EOF {
-				// All good, we got kicked.
-				return nil
-			} else {
-				return err
-			}
+			return scanner.Err()
 		})
 	})
 

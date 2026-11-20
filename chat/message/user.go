@@ -255,18 +255,31 @@ func (u *User) HandleMsg(m Message) error {
 	return u.writeMsg(m)
 }
 
-// Add message to consume by user
+// Add message to consume by user.
 func (u *User) Send(m Message) error {
 	select {
 	case <-u.done:
 		return ErrUserClosed
+	default:
+	}
+	select {
 	case u.msg <- m:
-	case <-time.After(messageTimeout):
+		return nil
+	default:
+	}
+
+	timer := time.NewTimer(messageTimeout)
+	defer timer.Stop()
+	select {
+	case <-u.done:
+		return ErrUserClosed
+	case u.msg <- m:
+		return nil
+	case <-timer.C:
 		logger.Printf("Message buffer full, closing: %s", u.ID())
 		u.Close()
 		return ErrUserClosed
 	}
-	return nil
 }
 
 // Container for per-user configurations.

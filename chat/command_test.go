@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/shazow/ssh-chat/chat/message"
+	"github.com/shazow/ssh-chat/set"
 )
 
 func TestAwayCommands(t *testing.T) {
@@ -66,5 +67,102 @@ func TestAwayCommands(t *testing.T) {
 			}
 
 		})
+	}
+}
+
+func runRoomCommand(t *testing.T, room *Room, user *message.User, input, want string) {
+	t.Helper()
+	cmd, _ := message.NewPublicMsg(input, user).ParseCommand()
+	err := room.commands.Run(room, *cmd)
+	if err != nil {
+		if got := "Err: " + err.Error(); got != want {
+			t.Fatalf("%s: got %q, want %q", input, got, want)
+		}
+		return
+	}
+	select {
+	case m := <-room.broadcast:
+		if reply, ok := m.(message.MessageTo); !ok || reply.To() != user {
+			t.Fatalf("%s: reply not directed to requester: %v", input, m)
+		}
+		if got := m.String(); got != "-> "+want {
+			t.Fatalf("%s: got %q, want %q", input, got, "-> "+want)
+		}
+	default:
+		t.Fatalf("%s: missing reply", input)
+	}
+}
+
+func TestHistoryCommands(t *testing.T) {
+	room := NewRoomWithHistory(4)
+	defer room.Close()
+	alice := message.NewUser(message.SimpleID("alice"))
+	bob := message.NewUser(message.SimpleID("bob"))
+	for _, user := range []*message.User{alice, bob} {
+		if _, err := room.Join(user); err != nil {
+			t.Fatal(err)
+		}
+		<-room.broadcast
+	}
+
+	room.HandleMsg(message.NewPublicMsg("evicted", bob))
+	room.HandleMsg(message.NewPublicMsg("Good Morning", bob))
+	room.HandleMsg(message.NewAnnounceMsg("server morning notice"))
+	room.HandleMsg(message.NewEmoteMsg("waves", bob))
+	room.HandleMsg(message.NewPublicMsg("good morning again", alice))
+	private := message.NewPrivateMsg("morning secret", alice, bob)
+	bob.ConsumeOne()
+	room.HandleMsg(&private)
+	alice.ConsumeOne()
+	room.HandleMsg(message.NewSystemMsg("morning secret", alice))
+
+	runRoomCommand(t, room, alice, "/history", "Recent public messages (3):\r\nbob: Good Morning\r\n** bob waves\r\nalice: good morning again")
+	runRoomCommand(t, room, alice, "/history 1", "Recent public messages (1):\r\nalice: good morning again")
+	runRoomCommand(t, room, alice, "/history 101", "Err: history count must be between 1 and 100")
+	runRoomCommand(t, room, alice, "/history 0", "Err: history count must be between 1 and 100")
+	runRoomCommand(t, room, alice, "/history 2 3", "Err: usage: /history [COUNT]")
+	runRoomCommand(t, room, alice, "/search GOOD MoRNING", "Search results (2):\r\nbob: Good Morning\r\nalice: good morning again")
+	runRoomCommand(t, room, alice, "/search secret", "No public messages found.")
+	runRoomCommand(t, room, alice, "/search", "Err: usage: /search TEXT")
+
+	if err := alice.Focused.Add(set.Itemize("carol", set.ZeroValue)); err != nil {
+		t.Fatal(err)
+	}
+	runRoomCommand(t, room, alice, "/history", "Recent public messages (2):\r\n** bob waves\r\nalice: good morning again")
+	if err := alice.Ignored.Add(set.Itemize("bob", set.ZeroValue)); err != nil {
+		t.Fatal(err)
+	}
+	runRoomCommand(t, room, alice, "/history", "Recent public messages (1):\r\nalice: good morning again")
+}
+
+func TestTopicAndBellCommands(t *testing.T) {
+	room := NewRoom()
+	defer room.Close()
+	user := message.NewUser(message.SimpleID("tester"))
+	member, err := room.Join(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-room.broadcast
+
+	runRoomCommand(t, room, user, "/topic", "No room topic is set.")
+	runRoomCommand(t, room, user, "/topic a test", "Err: must be op to change the room topic")
+	member.IsOp = true
+	runRoomCommand(t, room, user, "/topic a test", "Room topic: a test")
+	member.IsOp = false
+	runRoomCommand(t, room, user, "/topic", "Room topic: a test")
+	member.IsOp = true
+	runRoomCommand(t, room, user, "/topic -", "Room topic cleared.")
+	runRoomCommand(t, room, user, "/topic", "No room topic is set.")
+
+	runRoomCommand(t, room, user, "/bell off", "Terminal bell: off")
+	if user.Config().Bell {
+		t.Fatal("expected bell to be off")
+	}
+	runRoomCommand(t, room, user, "/bell", "Terminal bell: on")
+	runRoomCommand(t, room, user, "/bell on", "Terminal bell: on")
+	runRoomCommand(t, room, user, "/bell invalid", "Err: usage: /bell [on|off]")
+	if !user.Config().Bell {
+		t.Fatal("expected bell to remain on")
 	}
 }

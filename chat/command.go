@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -202,6 +203,115 @@ func InitCommands(c *Commands) {
 		},
 	})
 	c.Alias("/names", "/list")
+
+	const historyLimit = 100
+	sendHistory := func(room *Room, to *message.User, limit int, query, title string) {
+		entries := room.publicHistory(to, limit, query)
+		if len(entries) == 0 {
+			room.Send(message.NewSystemMsg("No public messages found.", to))
+			return
+		}
+		var output strings.Builder
+		fmt.Fprintf(&output, "%s (%d):", title, len(entries))
+		for _, entry := range entries {
+			output.WriteString(message.Newline)
+			output.WriteString(entry.String())
+		}
+		room.Send(message.NewSystemMsg(output.String(), to))
+	}
+	c.Add(Command{
+		Prefix:     "/history",
+		PrefixHelp: "[COUNT]",
+		Help:       "Show recent public messages and emotes (default 10, max 100).",
+		Handler: func(room *Room, msg message.CommandMsg) error {
+			count := 10
+			switch args := msg.Args(); len(args) {
+			case 0:
+			case 1:
+				n, err := strconv.Atoi(args[0])
+				if err != nil || n < 1 || n > historyLimit {
+					return fmt.Errorf("history count must be between 1 and %d", historyLimit)
+				}
+				count = n
+			default:
+				return errors.New("usage: /history [COUNT]")
+			}
+			sendHistory(room, msg.From(), count, "", "Recent public messages")
+			return nil
+		},
+	})
+
+	c.Add(Command{
+		Prefix:     "/search",
+		PrefixHelp: "TEXT",
+		Help:       "Find the 10 latest public messages and emotes containing TEXT (case-insensitive).",
+		Handler: func(room *Room, msg message.CommandMsg) error {
+			query := strings.TrimSpace(strings.TrimPrefix(msg.Body(), msg.Command()))
+			if query == "" {
+				return errors.New("usage: /search TEXT")
+			}
+			sendHistory(room, msg.From(), 10, strings.ToLower(query), "Search results")
+			return nil
+		},
+	})
+
+	c.Add(Command{
+		Prefix:     "/topic",
+		PrefixHelp: "[TEXT|-]",
+		Help:       "Show the room topic. Operators can set it or clear it with '-'.",
+		Handler: func(room *Room, msg message.CommandMsg) error {
+			user := msg.From()
+			topic := strings.TrimSpace(strings.TrimPrefix(msg.Body(), msg.Command()))
+			if topic == "" {
+				body := "No room topic is set."
+				if current := room.Topic(); current != "" {
+					body = "Room topic: " + current
+				}
+				room.Send(message.NewSystemMsg(body, user))
+				return nil
+			}
+			if !room.IsOp(user) {
+				return errors.New("must be op to change the room topic")
+			}
+			if topic == "-" {
+				room.SetTopic("")
+				room.Send(message.NewSystemMsg("Room topic cleared.", user))
+			} else {
+				room.SetTopic(topic)
+				room.Send(message.NewSystemMsg("Room topic: "+topic, user))
+			}
+			return nil
+		},
+	})
+
+	c.Add(Command{
+		Prefix:     "/bell",
+		PrefixHelp: "[on|off]",
+		Help:       "Change terminal alerts for mentions and private messages.",
+		Handler: func(room *Room, msg message.CommandMsg) error {
+			u := msg.From()
+			cfg := u.Config()
+			mode := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(msg.Body(), msg.Command())))
+			switch mode {
+			case "":
+				cfg.Bell = !cfg.Bell
+			case "on":
+				cfg.Bell = true
+			case "off":
+				cfg.Bell = false
+			default:
+				return errors.New("usage: /bell [on|off]")
+			}
+			u.SetConfig(cfg)
+			if cfg.Bell {
+				mode = "on"
+			} else {
+				mode = "off"
+			}
+			room.Send(message.NewSystemMsg("Terminal bell: "+mode, u))
+			return nil
+		},
+	})
 
 	c.Add(Command{
 		Prefix:     "/theme",

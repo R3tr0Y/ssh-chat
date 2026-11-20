@@ -28,17 +28,18 @@ var Version string = "dev"
 
 // Options contains the flag options
 type Options struct {
-	Admin      string   `long:"admin" description:"File of public keys who are admins."`
-	Bind       string   `long:"bind" description:"Host and port to listen on." default:"0.0.0.0:2022"`
-	Identity   []string `short:"i" long:"identity" description:"Private key to identify server with." default:"~/.ssh/id_rsa"`
-	Log        string   `long:"log" description:"Write chat log to this file."`
-	Motd       string   `long:"motd" description:"Optional Message of the Day file."`
-	Pprof      int      `long:"pprof" description:"Enable pprof http server for profiling."`
-	Verbose    []bool   `short:"v" long:"verbose" description:"Show verbose logging."`
-	Version    bool     `long:"version" description:"Print version and exit."`
-	Allowlist  string   `long:"allowlist" description:"Optional file of public keys who are allowed to connect."`
-	Whitelist  string   `long:"whitelist" dexcription:"Old name for allowlist option"`
-	Passphrase string   `long:"unsafe-passphrase" description:"Require an interactive passphrase to connect. Allowlist feature is more secure."`
+	Admin       string   `long:"admin" description:"File of public keys who are admins."`
+	Bind        string   `long:"bind" description:"Host and port to listen on." default:"0.0.0.0:2022"`
+	Identity    []string `short:"i" long:"identity" description:"Private key to identify server with." default:"~/.ssh/id_rsa"`
+	Log         string   `long:"log" description:"Write chat log to this file."`
+	HistorySize int      `long:"history-size" description:"Number of room broadcasts to retain in memory (0 disables, maximum 1000)." default:"20"`
+	Motd        string   `long:"motd" description:"Optional Message of the Day file."`
+	Pprof       int      `long:"pprof" description:"Enable pprof http server for profiling."`
+	Verbose     []bool   `short:"v" long:"verbose" description:"Show verbose logging."`
+	Version     bool     `long:"version" description:"Print version and exit."`
+	Allowlist   string   `long:"allowlist" description:"Optional file of public keys who are allowed to connect."`
+	Whitelist   string   `long:"whitelist" dexcription:"Old name for allowlist option"`
+	Passphrase  string   `long:"unsafe-passphrase" description:"Require an interactive passphrase to connect. Allowlist feature is more secure."`
 
 	RequirePubkey bool `long:"require-pubkey" description:"Refuse connections that do not present a public key, so every user has a key fingerprint. Any key is accepted. Has no effect with --unsafe-passphrase."`
 }
@@ -77,15 +78,19 @@ func main() {
 		return
 	}
 
+	if options.Version {
+		fmt.Println(Version)
+		return
+	}
+
+	if options.HistorySize < 0 || options.HistorySize > chat.MaxHistorySize {
+		fail(2, "--history-size must be between 0 and %d\n", chat.MaxHistorySize)
+	}
+
 	if options.Pprof != 0 {
 		go func() {
 			fmt.Println(http.ListenAndServe(fmt.Sprintf("localhost:%d", options.Pprof), nil))
 		}()
-	}
-
-	if options.Version {
-		fmt.Println(Version)
-		return
 	}
 
 	// Figure out the log level
@@ -136,7 +141,7 @@ func main() {
 
 	fmt.Printf("Listening for connections on %v\n", s.Addr().String())
 
-	host := sshchat.NewHost(s, auth)
+	host := sshchat.NewHostWithHistory(s, auth, options.HistorySize)
 	host.SetTheme(message.Themes[0])
 	host.Version = Version
 

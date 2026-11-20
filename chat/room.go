@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/shazow/ssh-chat/chat/message"
@@ -12,7 +13,8 @@ import (
 	"github.com/shazow/ssh-chat/set"
 )
 
-const historyLen = 20
+const DefaultHistorySize = 20
+const MaxHistorySize = 1000
 const roomBuffer = 10
 
 // ErrRoomClosed is the error returned when a message is sent to a room that is already
@@ -48,6 +50,7 @@ func (m *Member) SetMute(muted bool) {
 
 // Room definition, also a Set of User Items
 type Room struct {
+	topicMu   sync.RWMutex
 	topic     string
 	history   *message.History
 	broadcast chan message.Message
@@ -60,11 +63,14 @@ type Room struct {
 
 // NewRoom creates a new room.
 func NewRoom() *Room {
-	broadcast := make(chan message.Message, roomBuffer)
+	return NewRoomWithHistory(DefaultHistorySize)
+}
 
+// NewRoomWithHistory creates a room with a configurable history capacity.
+func NewRoomWithHistory(size int) *Room {
 	return &Room{
-		broadcast: broadcast,
-		history:   message.NewHistory(historyLen),
+		broadcast: make(chan message.Message, roomBuffer),
+		history:   message.NewHistory(min(size, MaxHistorySize)),
 		commands:  *defaultCommands,
 
 		Members: set.New(),
@@ -132,20 +138,14 @@ func (r *Room) HandleMsg(m message.Message) {
 		user.Send(m)
 	default:
 		r.history.Add(m)
-		r.Members.Each(func(_ string, item set.Item) (err error) {
+		_, announcement := m.(*message.AnnounceMsg)
+		r.Members.Each(func(_ string, item set.Item) error {
 			user := item.Value().(*Member).User
-
-			if user.Ignored.In(fromID) {
-				return // Skip ignored
-			}
-
-			if _, ok := m.(*message.AnnounceMsg); ok {
-				if user.Config().Quiet {
-					return // Skip announcements
-				}
+			if (fromID != "" && user.Ignored.In(fromID)) || (announcement && user.Config().Quiet) {
+				return nil
 			}
 			user.Send(m)
-			return
+			return nil
 		})
 	}
 }
@@ -165,9 +165,37 @@ func (r *Room) Send(m message.Message) {
 
 // History feeds the room's recent message history to the user's handler.
 func (r *Room) History(u *message.User) {
-	for _, m := range r.history.Get(historyLen) {
-		u.Send(m)
+	quiet := u.Config().Quiet
+	for _, m := range r.history.Get(DefaultHistorySize) {
+		if _, announcement := m.(*message.AnnounceMsg); announcement && quiet {
+			continue
+		}
+		if from, ok := m.(message.MessageFrom); ok && u.Ignored.In(from.From().ID()) {
+			continue
+		}
+		if err := u.Send(m); err != nil {
+			return
+		}
 	}
+}
+
+func (r *Room) publicHistory(u *message.User, limit int, query string) []message.Message {
+	return r.history.Select(limit, func(entry message.Message) bool {
+		var from *message.User
+		var body string
+		switch m := entry.(type) {
+		case message.PublicMsg:
+			from, body = m.From(), m.Msg.String()
+			if u != from && u.Focused.Len() > 0 && !u.Focused.In(from.ID()) {
+				return false
+			}
+		case *message.EmoteMsg:
+			from, body = m.From(), m.Msg.String()
+		default:
+			return false
+		}
+		return !u.Ignored.In(from.ID()) && (query == "" || strings.Contains(strings.ToLower(body), query))
+	})
 }
 
 // Join the room as a user, will announce.
@@ -248,12 +276,16 @@ func (r *Room) IsOp(u *message.User) bool {
 
 // Topic of the room.
 func (r *Room) Topic() string {
+	r.topicMu.RLock()
+	defer r.topicMu.RUnlock()
 	return r.topic
 }
 
 // SetTopic will set the topic of the room.
 func (r *Room) SetTopic(s string) {
+	r.topicMu.Lock()
 	r.topic = s
+	r.topicMu.Unlock()
 }
 
 // NamesPrefix lists all members' names with a given prefix, used to query

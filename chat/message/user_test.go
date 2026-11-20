@@ -59,3 +59,27 @@ func TestRenderTimestamp(t *testing.T) {
 		t.Errorf("Wrong screen output:\n Got: `%q`;\nWant: `%q`", actual, expected)
 	}
 }
+
+func TestSendToClosedUser(t *testing.T) {
+	u := NewUser(SimpleID("closed"))
+	u.Close()
+	if err := u.Send(NewMsg("hello")); err != ErrUserClosed {
+		t.Fatalf("got %v, want %v", err, ErrUserClosed)
+	}
+	if u.HasMessages() {
+		t.Fatal("message was queued after close")
+	}
+}
+
+func BenchmarkUserSendReady(b *testing.B) {
+	u := NewUser(SimpleID("bench"))
+	defer u.Close()
+	entry := NewAnnounceMsg("hello")
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := u.Send(entry); err != nil {
+			b.Fatal(err)
+		}
+		u.ConsumeOne()
+	}
+}
